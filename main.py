@@ -183,6 +183,7 @@ if __name__ == "__main__":
                 slice_spec = music_buff[:, :MUSIC_CHUNK, :]
                 music_buff = music_buff[:, MUSIC_STEP:, :]
                 direction = get_music_direction(slice_spec)
+                # direction = np.zeros(MUSIC_CHUNK, dtype=np.int16)
                 dir_buff = np.concatenate([dir_buff, direction])
 
             # BeamForming法で音源の強調（全方位）
@@ -190,11 +191,11 @@ if __name__ == "__main__":
                 slice_spec = bf_buff[:, :BF_CHUNK, :]
                 bf_buff = bf_buff[:, BF_CHUNK:, :]
                 bf = get_bf_map(slice_spec)
+                # bf = np.zeros((BF_N_THETA, BF_CHUNK, STFT_LEN//2 + 1))
                 bf_map_buff = np.concatenate([bf_map_buff, bf], axis=1)
 
             # 音源方向に強調された音源の抽出
             if bf_map_buff.shape[1] > EMPHA_CHUNK and dir_buff.shape[0] > EMPHA_CHUNK:
-                start = time.time()
                 slice_bf_map = bf_map_buff[:, :EMPHA_CHUNK, :].transpose(1, 0, 2)
                 bf_map_buff = bf_map_buff[:, EMPHA_CHUNK:, :]
                 slice_dir = dir_buff[:EMPHA_CHUNK]
@@ -218,12 +219,15 @@ if __name__ == "__main__":
                     reaudio_buff = np.concatenate([reaudio_buff_head, overlap, audio_tail])
 
             # オーディオの保存
-            if reaudio_buff.shape[0] > REAUDIO_CHUNK:
+            if reaudio_buff.shape[0] > REAUDIO_CHUNK * 2:
                 slice_reaudio = reaudio_buff[:REAUDIO_CHUNK]
                 reaudio_buff = reaudio_buff[REAUDIO_CHUNK:]
-                save_wav(slice_reaudio, filename=f"wav/output{wav_n}.wav")
+                # save_wav(slice_reaudio, filename=f"wav/output{wav_n}.wav")
                 wav_n = wav_n + 1
-                print(audio_buff.shape)
+                # print(f"audio_buff.shape: {audio_buff.shape}")
+                # print(f"music_buff.shape: {music_buff.shape}")
+                # print(f"bf_buff.shape: {bf_buff.shape}")
+                # print(f"reaudio_buff.shape: {reaudio_buff.shape}")
 
         except KeyboardInterrupt:
             print("Key interrupted")
