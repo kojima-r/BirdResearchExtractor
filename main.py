@@ -171,7 +171,7 @@ if __name__ == "__main__":
                 audio_buff = np.concatenate([audio_buff, audio], axis=1)
 
             # 短時間フーリエ変換で周波数領域へと変換
-            while audio_buff.shape[1] > STFT_CHUNK:
+            if audio_buff.shape[1] > STFT_CHUNK:
                 slice_audio = audio_buff[:, :STFT_CHUNK]
                 audio_buff = audio_buff[:, STFT_CHUNK - STFT_LEN + STFT_STEP:]
                 spec = get_spectrum(slice_audio)
@@ -179,21 +179,21 @@ if __name__ == "__main__":
                 bf_buff = np.concatenate([bf_buff, spec], axis=1)
 
             # MUSIC法で音源方向の取得
-            while music_buff.shape[1] > MUSIC_CHUNK:
+            if music_buff.shape[1] > MUSIC_CHUNK:
                 slice_spec = music_buff[:, :MUSIC_CHUNK, :]
                 music_buff = music_buff[:, MUSIC_STEP:, :]
                 direction = get_music_direction(slice_spec)
                 dir_buff = np.concatenate([dir_buff, direction])
 
             # BeamForming法で音源の強調（全方位）
-            while bf_buff.shape[1] > BF_CHUNK:
+            if bf_buff.shape[1] > BF_CHUNK:
                 slice_spec = bf_buff[:, :BF_CHUNK, :]
                 bf_buff = bf_buff[:, BF_CHUNK:, :]
                 bf = get_bf_map(slice_spec)
                 bf_map_buff = np.concatenate([bf_map_buff, bf], axis=1)
 
             # 音源方向に強調された音源の抽出
-            while bf_map_buff.shape[1] > EMPHA_CHUNK and dir_buff.shape[0] > EMPHA_CHUNK:
+            if bf_map_buff.shape[1] > EMPHA_CHUNK and dir_buff.shape[0] > EMPHA_CHUNK:
                 start = time.time()
                 slice_bf_map = bf_map_buff[:, :EMPHA_CHUNK, :].transpose(1, 0, 2)
                 bf_map_buff = bf_map_buff[:, EMPHA_CHUNK:, :]
@@ -203,7 +203,7 @@ if __name__ == "__main__":
                     empha_buff = np.concatenate([empha_buff, (data[k])[None, :]])
 
             # 逆短時間フーリエ変換で時間領域へと変換
-            while empha_buff.shape[0] > ISTFT_CHUNK:
+            if empha_buff.shape[0] > ISTFT_CHUNK:
                 slice_empha = empha_buff[:ISTFT_CHUNK, :]
                 empha_buff = empha_buff[ISTFT_CHUNK:, :]
                 audio = rebuild_audio(np.array([slice_empha]))
@@ -218,7 +218,7 @@ if __name__ == "__main__":
                     reaudio_buff = np.concatenate([reaudio_buff_head, overlap, audio_tail])
 
             # オーディオの保存
-            while reaudio_buff.shape[0] > REAUDIO_CHUNK:
+            if reaudio_buff.shape[0] > REAUDIO_CHUNK:
                 slice_reaudio = reaudio_buff[:REAUDIO_CHUNK]
                 reaudio_buff = reaudio_buff[REAUDIO_CHUNK:]
                 save_wav(slice_reaudio, filename=f"wav/output{wav_n}.wav")
