@@ -5,7 +5,7 @@ import pyaudio
 import wave
 from hark_tf.read_mat import read_hark_tf
 import micarrayx
-from micarrayx.filter.gsc import beamforming_ds, beamforming_ds2
+from gsc import beamforming_ds, beamforming_ds2
 from micarrayx.localization.music import compute_music_spec
 import queue
 import time
