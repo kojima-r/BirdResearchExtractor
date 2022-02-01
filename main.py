@@ -5,7 +5,7 @@ import pyaudio
 import wave
 from hark_tf.read_mat import read_hark_tf
 import micarrayx
-from micarrayx.filter.gsc import beamforming_ds
+from micarrayx.filter.gsc import beamforming_ds, beamforming_ds2
 from micarrayx.localization.music import compute_music_spec
 import queue
 import time
@@ -83,13 +83,13 @@ def get_music_direction(spec):
     p = np.sum(np.real(power), axis=1)
     m_power = 10 * np.log10(p + 1.0)
     direction = m_power.argmax(axis=1)
-    repeat_dir = np.repeat(direction, MUSIC_STEP)
-    return repeat_dir
+    return direction
 
 
-def get_bf_map(spec):
-    bf = beamforming_ds(TF_CONFIG, spec, n_theta=BF_N_THETA)
-    return np.array(bf)
+def get_bf(spec, direction):
+    theta = direction * 360 / 72
+    bf = beamforming_ds2(TF_CONFIG, spec, theta=theta)
+    return bf
 
 
 def rebuild_audio(spec):
@@ -120,13 +120,6 @@ music_config = config["MUSIC"]
 MUSIC_CHUNK = music_config.getint("CHUNK")  # music法の処理単位(frame)
 MUSIC_STEP = music_config.getint("STEP")  # music法のステップ幅
 
-bf_config = config["BF"]
-BF_CHUNK = bf_config.getint("CHUNK")  # beamformingの処理単位(frame)
-BF_N_THETA = bf_config.getint("N_THETA")  # beamformingの角度分割数72
-
-empha_config = config["EMPHA"]
-EMPHA_CHUNK = empha_config.getint("CHUNK")  # 音源強調の処理単位
-
 istft_config = config["ISTFT"]
 ISTFT_CHUNK = istft_config.getint("CHUNK")  # istftの処理単位(frame)
 
@@ -138,10 +131,7 @@ if __name__ == "__main__":
     wav_n = 0  # ファイル番号
     audio_queue = queue.Queue()
     audio_buff = np.empty((CHANNELS, 0))
-    music_buff = np.empty((CHANNELS, 0, STFT_LEN//2 + 1))
-    bf_buff = np.empty((CHANNELS, 0, STFT_LEN//2 + 1))
-    dir_buff = np.empty(0, dtype=np.int16)
-    bf_map_buff = np.empty((BF_N_THETA, 0, STFT_LEN//2 + 1))
+    spec_buff = np.empty((CHANNELS, 0, STFT_LEN//2 + 1))
     empha_buff = np.empty((0, STFT_LEN//2 + 1))
     reaudio_buff = np.empty(0)
 
@@ -175,33 +165,15 @@ if __name__ == "__main__":
                 slice_audio = audio_buff[:, :STFT_CHUNK]
                 audio_buff = audio_buff[:, STFT_CHUNK - STFT_LEN + STFT_STEP:]
                 spec = get_spectrum(slice_audio)
-                music_buff = np.concatenate([music_buff, spec], axis=1)
-                bf_buff = np.concatenate([bf_buff, spec], axis=1)
+                spec_buff = np.concatenate([spec_buff, spec], axis=1)
 
-            # MUSIC法で音源方向の取得
-            if music_buff.shape[1] > MUSIC_CHUNK:
-                slice_spec = music_buff[:, :MUSIC_CHUNK, :]
-                music_buff = music_buff[:, MUSIC_STEP:, :]
+            # MUSIC法とBeamForming法で音源の強調
+            if spec_buff.shape[1] > MUSIC_CHUNK:
+                slice_spec = spec_buff[:, :MUSIC_CHUNK, :]
+                spec_buff = spec_buff[:, MUSIC_STEP:, :]
                 direction = get_music_direction(slice_spec)
-                # direction = np.zeros(MUSIC_CHUNK, dtype=np.int16)
-                dir_buff = np.concatenate([dir_buff, direction])
-
-            # BeamForming法で音源の強調（全方位）
-            if bf_buff.shape[1] > BF_CHUNK:
-                slice_spec = bf_buff[:, :BF_CHUNK, :]
-                bf_buff = bf_buff[:, BF_CHUNK:, :]
-                bf = get_bf_map(slice_spec)
-                # bf = np.zeros((BF_N_THETA, BF_CHUNK, STFT_LEN//2 + 1))
-                bf_map_buff = np.concatenate([bf_map_buff, bf], axis=1)
-
-            # 音源方向に強調された音源の抽出
-            if bf_map_buff.shape[1] > EMPHA_CHUNK and dir_buff.shape[0] > EMPHA_CHUNK:
-                slice_bf_map = bf_map_buff[:, :EMPHA_CHUNK, :].transpose(1, 0, 2)
-                bf_map_buff = bf_map_buff[:, EMPHA_CHUNK:, :]
-                slice_dir = dir_buff[:EMPHA_CHUNK]
-                dir_buff = dir_buff[EMPHA_CHUNK:]
-                for k, data in zip(slice_dir, slice_bf_map):
-                    empha_buff = np.concatenate([empha_buff, (data[k])[None, :]])
+                bf = get_bf(slice_spec, direction)
+                empha_buff = np.concatenate([empha_buff, bf])
 
             # 逆短時間フーリエ変換で時間領域へと変換
             if empha_buff.shape[0] > ISTFT_CHUNK:
@@ -225,8 +197,7 @@ if __name__ == "__main__":
                 # save_wav(slice_reaudio, filename=f"wav/output{wav_n}.wav")
                 wav_n = wav_n + 1
                 # print(f"audio_buff.shape: {audio_buff.shape}")
-                # print(f"music_buff.shape: {music_buff.shape}")
-                # print(f"bf_buff.shape: {bf_buff.shape}")
+                # print(f"spec_buff.shape: {spec_buff.shape}")
                 # print(f"reaudio_buff.shape: {reaudio_buff.shape}")
 
         except KeyboardInterrupt:
