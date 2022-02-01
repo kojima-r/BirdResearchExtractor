@@ -14,6 +14,12 @@ import configparser
 
 
 def get_device_index(keyword):
+    """ 音声デバイスのインデックスを取得
+    Args:
+        keyword (str): キーワード
+    Returns:
+        int or None: キーワードを含む音声デバイスのインデックス
+    """
     audio = pyaudio.PyAudio()
     for i in range(audio.get_device_count()):
         if keyword in audio.get_device_info_by_index(i)["name"]:
@@ -22,6 +28,12 @@ def get_device_index(keyword):
 
 
 def conv_to_np_from_buff(data):
+    """ バッファ形式の音声データをnumpy形式に変換
+    Args:
+        data (buff): バッファデータ
+    Returns:
+        ndarray: numpy形式のデータ(チャンネル数, データ長)
+    """
     bit_dtype = {
         8: "int8",
         16: "int16",
@@ -35,6 +47,12 @@ def conv_to_np_from_buff(data):
 
 
 def conv_to_buff_from_np(data):
+    """ numpy形式の音声データをバッファ形式に変換
+    Args:
+        data (ndarray): numpy形式のデータ(チャンネル数, データ長)
+    Returns:
+        buff: バッファ形式のデータ
+    """
     np_dtype = {
         8: np.int8,
         16: np.int16,
@@ -55,22 +73,24 @@ def stream_callback(in_data, frame_count, time_info, status):
     return (in_data, pyaudio.paContinue)
 
 
-def save_wav(data, filename="output.wav"):
-    data = conv_to_buff_from_np(data)
-    with wave.open(filename, 'wb') as w:
-        w.setnchannels(1)
-        w.setsampwidth(BIT // 8)
-        w.setframerate(SAMPLE_RATE)
-        w.writeframes(data)
-    print(f"saved {filename}")
-
-
 def get_spectrum(data):
+    """ numpy形式の音声データをバッファ形式に変換
+    Args:
+        data (ndarray): numpy形式の音声データ(チャンネル数, データ長)
+    Returns:
+        ndarray: スペクトログラム(チャンネル数, データ長, 周波数ビン)
+    """
     spec = micarrayx.stft_mch(data, STFT_WIN, STFT_STEP)
     return spec
 
 
 def get_music_direction(spec):
+    """ MUSIC法による音源方向の取得
+    Args:
+        spec (ndarray): スペクトログラム(チャンネル数, データ長, 周波数ビン)
+    Returns:
+        int: 音源方向（分解能72）
+    """
     power = compute_music_spec(
         spec=spec,
         src_num=1,
@@ -87,12 +107,25 @@ def get_music_direction(spec):
 
 
 def get_bf(spec, direction):
+    """ 遅延和ビームフォーミングによる音源強調
+    Args:
+        spec (ndarray): スペクトログラム(チャンネル数, データ長, 周波数ビン)
+        direction: 強調する方向(分解能72)
+    Returns:
+        ndarray: 強調音源のスペクトログラム(データ長, 周波数ビン)
+    """
     theta = direction * 360 / 72
     bf = beamforming_ds2(TF_CONFIG, spec, theta=theta)
     return bf
 
 
 def rebuild_audio(spec):
+    """ スペクトログラムから波形データを復元
+    Args:
+        spec (ndarray): スペクトログラム(チャンネル数, データ長, 周波数ビン)
+    Returns:
+        ndarray: 波形データ(1(チャンネル数), データ長)
+    """
     audio = micarrayx.istft_mch(spec, STFT_WIN, STFT_STEP)
     return audio
 
@@ -194,7 +227,6 @@ if __name__ == "__main__":
             if reaudio_buff.shape[0] > REAUDIO_CHUNK * 2:
                 slice_reaudio = reaudio_buff[:REAUDIO_CHUNK]
                 reaudio_buff = reaudio_buff[REAUDIO_CHUNK:]
-                # save_wav(slice_reaudio, filename=f"wav/output{wav_n}.wav")
                 wav_n = wav_n + 1
                 # print(f"audio_buff.shape: {audio_buff.shape}")
                 # print(f"spec_buff.shape: {spec_buff.shape}")
