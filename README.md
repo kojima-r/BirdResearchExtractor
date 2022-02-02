@@ -21,6 +21,7 @@ metadata/
 
 ## 実行
 ```bash
+python discriminator.py
 python main.py
 ```
 
