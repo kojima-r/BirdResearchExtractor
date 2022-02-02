@@ -1,4 +1,5 @@
 # ライブラリのインポート
+from re import S
 import numpy as np
 from numpy.core.fromnumeric import shape
 import pyaudio
@@ -11,6 +12,35 @@ import queue
 import time
 import threading
 import configparser
+import socket
+
+
+class UdpSender():
+    def __init__(self, send_queue):
+        src_ip = "127.0.0.1"
+        src_port = 11111
+        self.src_addr = (src_ip, src_port)
+
+        dst_ip = "127.0.0.1"
+        dst_port = 22222
+        self.dst_addr = (dst_ip, dst_port)
+
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock.bind(self.src_addr)
+
+        self.send_queue = send_queue
+        thread = threading.Thread(target=self.send)
+        thread.setDaemon(True)
+        thread.start()
+        print("Initialized sender")
+
+
+    def send(self):
+        while True:
+            if not self.send_queue.empty():
+                data = self.send_queue.get()
+                self.sock.sendto(data.tobytes(), self.dst_addr)
+            time.sleep(0.05)
 
 
 def get_device_index(keyword):
@@ -156,18 +186,23 @@ MUSIC_STEP = music_config.getint("STEP")  # music法のステップ幅
 istft_config = config["ISTFT"]
 ISTFT_CHUNK = istft_config.getint("CHUNK")  # istftの処理単位(frame)
 
-reaudio_config = config["REAUDIO"]
-REAUDIO_CHUNK = reaudio_config.getint("CHUNK")   # reaudioの処理単位(sample)
+send_config = config["SEND"]
+SEND_CHUNK = send_config.getint("CHUNK")   # sendの処理単位(sample)
 
 
 if __name__ == "__main__":
     wav_n = 0  # ファイル番号
     audio_queue = queue.Queue()
+    send_queue = queue.Queue()
     audio_buff = np.empty((CHANNELS, 0))
     spec_buff = np.empty((CHANNELS, 0, STFT_LEN//2 + 1))
     empha_buff = np.empty((0, STFT_LEN//2 + 1))
     reaudio_buff = np.empty(0)
 
+    # Udp送信側の設定
+    sender = UdpSender(send_queue)
+
+    # オーディオストリーミングの設定
     p = pyaudio.PyAudio()
     p_format = {
         8: pyaudio.paInt8,
@@ -223,14 +258,11 @@ if __name__ == "__main__":
                     overlap = reaudio_buff_tail + audio_head
                     reaudio_buff = np.concatenate([reaudio_buff_head, overlap, audio_tail])
 
-            # オーディオの保存
-            if reaudio_buff.shape[0] > REAUDIO_CHUNK * 2:
-                slice_reaudio = reaudio_buff[:REAUDIO_CHUNK]
-                reaudio_buff = reaudio_buff[REAUDIO_CHUNK:]
-                wav_n = wav_n + 1
-                # print(f"audio_buff.shape: {audio_buff.shape}")
-                # print(f"spec_buff.shape: {spec_buff.shape}")
-                # print(f"reaudio_buff.shape: {reaudio_buff.shape}")
+            # 強調されたオーディオを送信用キューに追加
+            if reaudio_buff.shape[0] > SEND_CHUNK * 2:
+                slice_reaudio = reaudio_buff[:SEND_CHUNK]
+                reaudio_buff = reaudio_buff[SEND_CHUNK:]
+                send_queue.put(slice_reaudio)
 
         except KeyboardInterrupt:
             print("Key interrupted")
