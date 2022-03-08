@@ -1,0 +1,6 @@
+__pycache__/
+audioset_tagging_cnn/
+best_models/
+label01_mapping.tsv
+metadata/
+model.py
