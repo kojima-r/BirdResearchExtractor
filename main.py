@@ -40,6 +40,7 @@ class UdpSender():
             if not self.send_queue.empty():
                 data = self.send_queue.get()
                 self.sock.sendto(data.tobytes(), self.dst_addr)
+                print(f"Sent {data.shape}, audio_buff: {audio_buff.shape}")
             time.sleep(0.05)
 
 
