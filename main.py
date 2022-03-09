@@ -124,7 +124,7 @@ def get_music_direction(spec):
     """
     power = compute_music_spec(
         spec=spec,
-        src_num=1,
+        src_num=3,
         tf_config=TF_CONFIG,
         df=SAMPLE_RATE/STFT_LEN,
         min_freq_bin=1,
