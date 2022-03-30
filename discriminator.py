@@ -12,6 +12,7 @@ import configparser
 
 class UdpReceiver():
     def __init__(self, receive_queue):
+        print("Initializing receiver...")
         src_ip = "127.0.0.1"
         src_port = 22222
         self.src_addr = (src_ip, src_port)
@@ -24,7 +25,7 @@ class UdpReceiver():
         thread = threading.Thread(target=self.recv)
         thread.setDaemon(True)
         thread.start()
-        print("Initialized receiver")
+        print("Initialized receiver!")
 
     def recv(self):
         while True:
@@ -33,23 +34,7 @@ class UdpReceiver():
             time.sleep(0.05)
 
 
-def pred(data):
-    classes_num=291
-    sample_rate=16000
-    window_size=512
-    hop_size=160
-    mel_bins=64
-    fmin=50
-    fmax=8000
-    model_path="best_models/best_model.pth"
-    device = "cuda:0" if torch.cuda.is_available() else "cpu"
-
-    # loading model
-    model = Transfer_Cnn14(sample_rate, window_size, hop_size, mel_bins, fmin, fmax, classes_num, freeze_base=False)
-    model.load_state_dict(torch.load(model_path, map_location=torch.device('cpu')))
-    model.to(device)
-    model.eval()
-
+def pred(data, model):
     # makeing input tensor 
     input_tensor = torch.from_numpy(data)
     input_tensor = input_tensor.to(torch.float32)
@@ -64,23 +49,40 @@ def pred(data):
     return label
 
 
+# 環境変数設定
 config = configparser.ConfigParser()
 config.read("discriminator_config.ini", encoding="utf-8")
 dc_config = config["DISCRIMINATOR"]
 CHUNK = dc_config.getint("CHUNK")
 STEP = dc_config.getint("STEP")
-
+label_list = [] # クラス名リスト
+with open("label01_mapping.tsv", "r") as f:
+    tsv = csv.reader(f, delimiter="\t")
+    for row in tsv:
+        label_list.append(row[1])
 
 if __name__ == "__main__":
+    # モデルの初期設定、ロード
+    print("Loading a model...")
+    classes_num=291
+    sample_rate=16000
+    window_size=512
+    hop_size=160
+    mel_bins=64
+    fmin=50
+    fmax=8000
+    model_path="best_models/best_model.pth"
+    device = "cuda:0" if torch.cuda.is_available() else "cpu"
+    model = Transfer_Cnn14(sample_rate, window_size, hop_size, mel_bins, fmin, fmax, classes_num, freeze_base=False)
+    model.load_state_dict(torch.load(model_path, map_location=torch.device('cpu')))
+    model.to(device)
+    model.eval()
+    print("Loaded a model!")
+
+    # UDP受信側の初期設定
     receive_queue = queue.Queue()
     audio_buff = np.empty(0)
     receiver = UdpReceiver(receive_queue)
-
-    label_list = []
-    with open("label01_mapping.tsv", "r") as f:
-        tsv = csv.reader(f, delimiter="\t")
-        for row in tsv:
-            label_list.append(row[1])
 
     while True:
         try:
@@ -93,7 +95,7 @@ if __name__ == "__main__":
             if audio_buff.shape[0] > CHUNK:
                 audio = audio_buff[:CHUNK]
                 audio_buff = audio_buff[STEP:]
-                label = pred(audio[None, :])
+                label = pred(audio[None, :], model)
                 print(label)
 
         except KeyboardInterrupt:
