@@ -17,6 +17,7 @@ import socket
 
 class UdpSender():
     def __init__(self, send_queue):
+        print("Initializing sender!")
         src_ip = "127.0.0.1"
         src_port = 11111
         self.src_addr = (src_ip, src_port)
@@ -32,7 +33,7 @@ class UdpSender():
         thread = threading.Thread(target=self.send)
         thread.setDaemon(True)
         thread.start()
-        print("Initialized sender")
+        print("Initialized sender!")
 
 
     def send(self):

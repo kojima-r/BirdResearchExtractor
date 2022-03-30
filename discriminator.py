@@ -53,8 +53,8 @@ def pred(data, model):
 config = configparser.ConfigParser()
 config.read("discriminator_config.ini", encoding="utf-8")
 dc_config = config["DISCRIMINATOR"]
-CHUNK = dc_config.getint("CHUNK")
-STEP = dc_config.getint("STEP")
+CHUNK = dc_config.getint("CHUNK")  # 音声識別の長さ単位
+STEP = dc_config.getint("STEP")  # 音声識別のステップ
 label_list = [] # クラス名リスト
 with open("label01_mapping.tsv", "r") as f:
     tsv = csv.reader(f, delimiter="\t")
