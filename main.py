@@ -41,7 +41,7 @@ class UdpSender():
             if not self.send_queue.empty():
                 data = self.send_queue.get()
                 self.sock.sendto(data.tobytes(), self.dst_addr)
-                print(f"Sent {data.shape}, audio_buff: {audio_buff.shape}")
+                # print(f"Sent {data.shape}, audio_buff: {audio_buff.shape}, spec_buff: {spec_buff.shape}")
             time.sleep(0.05)
 
 
@@ -128,13 +128,13 @@ def get_music_direction(spec):
         src_num=3,
         tf_config=TF_CONFIG,
         df=SAMPLE_RATE/STFT_LEN,
-        min_freq_bin=1,
+        min_freq_bin=0,
         win_size=MUSIC_CHUNK,
         step=MUSIC_STEP
     )
     p = np.sum(np.real(power), axis=1)
     m_power = 10 * np.log10(p + 1.0)
-    direction = m_power.argmax(axis=1)
+    direction = m_power.argmax(axis=1)[0]
     return direction
 
 
@@ -162,37 +162,36 @@ def rebuild_audio(spec):
     return audio
 
 
-config = configparser.ConfigParser()
-config.read("config.ini", encoding="utf-8")
-INPUT_DEVICE_INDEX = get_device_index("TAMAGO")
-TF_CONFIG = read_hark_tf("tamago_rectf.zip")  # マイクの伝達関数など
-
-mic_config = config["MIC"]
-CHANNELS = mic_config.getint("CHANNELS")  # チャンネル数
-BIT = mic_config.getint("BIT")  # ビット数
-SAMPLE_RATE = mic_config.getint("SAMPLE_RATE")  # サンプルレート
-
-stream_config = config["STREAM"]
-CHUNK = stream_config.getint("CHUNK")  # ストリーミングからの読み込み単位
-
-stft_config = config["STFT"]
-STFT_CHUNK = stft_config.getint("CHUNK")  # stftの処理単位(sample)
-STFT_LEN = stft_config.getint("LEN")  # stftの窓幅
-STFT_STEP = stft_config.getint("STEP")  # stftのステップ幅
-STFT_WIN = np.hamming(STFT_LEN)  # stftの窓関数
-
-music_config = config["MUSIC"]
-MUSIC_CHUNK = music_config.getint("CHUNK")  # music法の処理単位(frame)
-MUSIC_STEP = music_config.getint("STEP")  # music法のステップ幅
-
-istft_config = config["ISTFT"]
-ISTFT_CHUNK = istft_config.getint("CHUNK")  # istftの処理単位(frame)
-
-send_config = config["SEND"]
-SEND_CHUNK = send_config.getint("CHUNK")   # sendの処理単位(sample)
-
-
 if __name__ == "__main__":
+    config = configparser.ConfigParser()
+    config.read("config.ini", encoding="utf-8")
+    INPUT_DEVICE_INDEX = get_device_index("TAMAGO")
+    TF_CONFIG = read_hark_tf("tamago_rectf.zip")  # マイクの伝達関数など
+
+    mic_config = config["MIC"]
+    CHANNELS = mic_config.getint("CHANNELS")  # チャンネル数
+    BIT = mic_config.getint("BIT")  # ビット数
+    SAMPLE_RATE = mic_config.getint("SAMPLE_RATE")  # サンプルレート
+
+    stream_config = config["STREAM"]
+    CHUNK = stream_config.getint("CHUNK")  # ストリーミングからの読み込み単位
+
+    stft_config = config["STFT"]
+    STFT_CHUNK = stft_config.getint("CHUNK")  # stftの処理単位(sample)
+    STFT_LEN = stft_config.getint("LEN")  # stftの窓幅
+    STFT_STEP = stft_config.getint("STEP")  # stftのステップ幅
+    STFT_WIN = np.hamming(STFT_LEN)  # stftの窓関数
+
+    music_config = config["MUSIC"]
+    MUSIC_CHUNK = music_config.getint("CHUNK")  # music法の処理単位(frame)
+    MUSIC_STEP = music_config.getint("STEP")  # music法のステップ幅
+
+    istft_config = config["ISTFT"]
+    ISTFT_CHUNK = istft_config.getint("CHUNK")  # istftの処理単位(frame)
+
+    send_config = config["SEND"]
+    SEND_CHUNK = send_config.getint("CHUNK")   # sendの処理単位(sample)
+
     wav_n = 0  # ファイル番号
     audio_queue = queue.Queue()
     send_queue = queue.Queue()
