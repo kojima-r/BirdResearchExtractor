@@ -10,29 +10,6 @@ import csv
 from model import Transfer_Cnn14
 import configparser
 
-class UdpReceiver():
-    def __init__(self, receive_queue):
-        print("Initializing receiver...")
-        src_ip = "127.0.0.1"
-        src_port = 22222
-        self.src_addr = (src_ip, src_port)
-
-        self.SIZE = 8192
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.sock.bind(self.src_addr)
-
-        self.receive_queue = receive_queue
-        thread = threading.Thread(target=self.recv)
-        thread.setDaemon(True)
-        thread.start()
-        print("Initialized receiver!")
-
-    def recv(self):
-        while True:
-            data, addr = self.sock.recvfrom(self.SIZE)
-            self.receive_queue.put(np.frombuffer(data))
-            time.sleep(0.05)
-
 
 def pred(data, model):
     # makeing input tensor 

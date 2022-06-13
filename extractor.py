@@ -1,4 +1,5 @@
 # ライブラリのインポート
+import sys
 from email.mime import audio
 from re import S
 import numpy as np
@@ -8,40 +9,11 @@ import micarrayx
 from gsc import beamforming_ds, beamforming_ds2
 from micarrayx.localization.music import compute_music_spec
 import queue
-import time
-import threading
 import configparser
-import socket
 import pickle
 import math
-
-
-class UdpSender():
-    def __init__(self):
-        print("Initializing sender......")
-        src_ip = "127.0.0.1"
-        src_port = 11111
-        self.src_addr = (src_ip, src_port)
-
-        dst_ip = "127.0.0.1"
-        dst_port = 22222
-        self.dst_addr = (dst_ip, dst_port)
-
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.sock.bind(self.src_addr)
-
-        self.send_queue = queue.Queue()
-        thread = threading.Thread(target=self.send)
-        thread.setDaemon(True)
-        thread.start()
-        print("Initialized sender!")
-
-    def send(self):
-        while True:
-            if not self.send_queue.empty():
-                data = self.send_queue.get()
-                self.sock.sendto(data, self.dst_addr)
-            time.sleep(0.01)
+import time
+from udp import UdpSender
 
 
 class AudioStreamer():
@@ -104,9 +76,9 @@ class AudioProcessor():
         self.audio_buff = np.empty((CHANNELS, 0))
         self.spec_buff = np.empty((CHANNELS, 0, STFT_LEN//2 + 1))
         self.empha_spec_list = []
-        self.least_empha_spec = {}
+        self.least_tagged_empha_spec_list = []
         self.audio_id = 0
-        self.t = 0
+        self.time = 0
         self.tagged_empha_spec_list = []
         self.tagged_empha_audio_list = []
 
@@ -156,38 +128,17 @@ class AudioProcessor():
     def __istft(self, tagged_empha_spec):
         spec = tagged_empha_spec["spec"][None, :]
         audio = micarrayx.istft_mch(spec, STFT_WIN, STFT_STEP)[0]
-        tagged_empha_audio = {
-            "mic_id": tagged_empha_spec["mic_id"],
-            "time": tagged_empha_spec["time"],
-            "direction": tagged_empha_spec["direction"],
-            "id": tagged_empha_spec["id"],
-            "audio": audio[:-STFT_STEP]
-        }
+        tagged_empha_audio = tagged_empha_spec.copy()
+        del tagged_empha_audio["spec"]
+        tagged_empha_audio["audio"] = audio[:-STFT_STEP]
         return tagged_empha_audio
 
     def __is_same_source(self, empha_spec, least_empha_spec):
-        is_same = abs(empha_spec["direction"][0] -
-                      least_empha_spec["direction"][-1]) % 72 <= 2
+        condition1 = (empha_spec["time"] - least_empha_spec["time"]) == 1
+        condition2 = abs(empha_spec["direction"] -
+                         least_empha_spec["direction"]) % 72 <= 1
+        is_same = condition1 and condition2
         return is_same
-    
-    def __convert_to_buff_from_np(self, in_data):
-        """ numpy形式の音声データをバッファ形式に変換
-        Args:
-            data (ndarray): numpy形式のデータ(チャンネル数, データ長)
-        Returns:
-            buff: バッファ形式のデータ
-        """
-        np_dtype = {
-            8: np.int8,
-            16: np.int16,
-            24: np.int32,
-            32: np.int32
-        }
-        out_data = np.ravel(in_data.T)
-        out_data = out_data * (2 ** (BIT - 1))
-        out_data = out_data.astype(np_dtype[BIT])
-        out_data = out_data.tobytes()
-        return out_data
 
     def get_audio_from_queue(self, audio_queue):
         audio = audio_queue.get()
@@ -200,76 +151,80 @@ class AudioProcessor():
         spec = self.__stft(slice_audio)
         self.spec_buff = np.concatenate([self.spec_buff, spec], axis=1)
 
-    def emphasize_audio_source(self):
+    def emphasize_spectrum(self):
         slice_spec = self.spec_buff[:, :MUSIC_CHUNK, :]
         self.spec_buff = self.spec_buff[:, MUSIC_STEP:, :]
         direction = self.__music(slice_spec)
         bf = self.__bf(slice_spec, direction)
         empha_spec = {
-            "mic_id": 0,
-            "time": np.array([self.t]),
-            "direction": np.array([direction]),
+            "mic_id": MIC_ID,
+            "time": self.time,
+            "direction": direction,
             "spec": bf
         }
         self.empha_spec_list.append(empha_spec)
-        self.t += 1
+        self.time += 1
 
-    def tagging_audio_source(self):
+    def tagging_spectrum(self):
         empha_spec = self.empha_spec_list[0]
         self.empha_spec_list = self.empha_spec_list[1:]
-        if self.least_empha_spec == {}:
-            self.least_empha_spec = empha_spec
+        tagged_empha_spec = empha_spec
+        if len(self.least_tagged_empha_spec_list) == 0:
+            tagged_empha_spec["audio_id"] = self.audio_id
+            self.tagged_empha_spec_list.append(tagged_empha_spec)
+            self.least_tagged_empha_spec_list.append(tagged_empha_spec)
+            self.audio_id += 1
         else:
-            if self.__is_same_source(empha_spec, self.least_empha_spec):
-                combined_time = np.concatenate(
-                    [self.least_empha_spec["time"], empha_spec["time"]], axis=0
-                )
-                combined_direction = np.concatenate(
-                    [self.least_empha_spec["direction"], empha_spec["direction"]], axis=0)
-                combined_spec = np.concatenate(
-                    [self.least_empha_spec["spec"], empha_spec["spec"]], axis=0)
-                self.least_empha_spec = {
-                    "mic_id": 0,
-                    "time": combined_time,
-                    "direction": combined_direction,
-                    "spec": combined_spec
-                }
-            else:
-                self.least_empha_spec["id"] = self.audio_id
-                self.tagged_empha_spec_list.append(self.least_empha_spec)
-                self.least_empha_spec = empha_spec
+            max_unnecessary_idx = -1
+            continuous = False
+            for idx in range(len(self.least_tagged_empha_spec_list)):
+                least_tagged_empha_spec = self.least_tagged_empha_spec_list[idx]
+                if (empha_spec["time"] - least_tagged_empha_spec["time"]) >= 2:
+                    max_unnecessary_idx = idx
+                if self.__is_same_source(empha_spec, least_tagged_empha_spec):
+                    tagged_empha_spec["audio_id"] = least_tagged_empha_spec["audio_id"]
+                    continuous = True
+                    break
+                else:
+                    tagged_empha_spec["audio_id"] = self.audio_id
+            if not continuous:
                 self.audio_id += 1
+            self.tagged_empha_spec_list.append(tagged_empha_spec)
+            self.least_tagged_empha_spec_list.append(tagged_empha_spec)
+            self.least_tagged_empha_spec_list = self.least_tagged_empha_spec_list[
+                max_unnecessary_idx + 1:]
+        # time = self.tagged_empha_spec_list[-1]["time"]
+        # audio_id = self.tagged_empha_spec_list[-1]["audio_id"]
+        # direction = self.tagged_empha_spec_list[-1]["direction"]
+        # print(f"time: {time}, audio_id: {audio_id}, direction: {direction}")
 
     def convert_to_audio_from_spectrum(self):
         tagged_empha_spec = self.tagged_empha_spec_list[0]
         self.tagged_empha_spec_list = self.tagged_empha_spec_list[1:]
         tagged_empha_audio = self.__istft(tagged_empha_spec)
         self.tagged_empha_audio_list.append(tagged_empha_audio)
+        # time = self.tagged_empha_audio_list[-1]["time"]
+        # audio_id = self.tagged_empha_audio_list[-1]["audio_id"]
+        # direction = self.tagged_empha_audio_list[-1]["direction"]
+        # print(f"time: {time}, audio_id: {audio_id}, direction: {direction}")
 
     def push_audio_to_queue(self, send_queue):
         tagged_empha_audio = self.tagged_empha_audio_list[0]
         self.tagged_empha_audio_list = self.tagged_empha_audio_list[1:]
-        a = tagged_empha_audio["audio"]
-        # = STFT_STEP * MUSIC_CHUNK
-        div_l = 1024  # audioを送信用に分割する
-        div_n = math.ceil(tagged_empha_audio["audio"].shape[0] / div_l)  # 分割数
+        div_n = math.ceil(
+            tagged_empha_audio["audio"].shape[0] / SEND_CHUNK)  # 分割数
         for i in range(div_n):
-            splitted_audio = tagged_empha_audio["audio"][i * div_l:(i + 1) * div_l]
-            mic_id = tagged_empha_audio["mic_id"]
-            direction = tagged_empha_audio["direction"][div_l * i // (STFT_STEP * MUSIC_CHUNK)]
-            audio_id = tagged_empha_audio["id"] % (2 ** 8)
-            packet_id = i
-            time = tagged_empha_audio["time"][div_l * i // (STFT_STEP * MUSIC_CHUNK)]
+            splitted_audio = tagged_empha_audio["audio"][i * SEND_CHUNK:(i + 1) * SEND_CHUNK]
             splitted_data = {
-                "audio_id": audio_id,
-                "packet_id": packet_id,
-                "mic_id": mic_id,
-                "time": time,
-                "direction": direction,
+                "audio_id": tagged_empha_audio["audio_id"],
+                "packet_id": i,
+                "mic_id": tagged_empha_audio["mic_id"],
+                "time": tagged_empha_audio["time"],
+                "direction": tagged_empha_audio["direction"],
                 "audio": splitted_audio
             }
-            splitted_audio_bin = pickle.dumps(splitted_data)
-            send_queue.put(splitted_audio_bin)
+            splitted_data_bin = pickle.dumps(splitted_data)
+            send_queue.put(splitted_data_bin)
 
 
 def get_device_index(keyword):
@@ -286,50 +241,12 @@ def get_device_index(keyword):
     return None
 
 
-def main():
-    # Udp送信側の設定
-    sender = UdpSender()
-    # オーディオストリーミングの設定
-    streamer = AudioStreamer()
-    # オーディオプロセッサの設定
-    processor = AudioProcessor()
-
-    while streamer.stream.is_active():
-        try:
-            # ストリーミングから音声取得
-            while not streamer.audio_queue.empty():
-                processor.get_audio_from_queue(streamer.audio_queue)
-
-            # 短時間フーリエ変換で周波数領域へと変換
-            if processor.audio_buff.shape[1] > STFT_CHUNK:
-                processor.convert_to_spectrum_from_audio()
-
-            # MUSIC法とBeamForming法で音源の強調
-            if processor.spec_buff.shape[1] > MUSIC_CHUNK:
-                processor.emphasize_audio_source()
-
-            # 音源別にid付けをする
-            if len(processor.empha_spec_list) > 0:
-                processor.tagging_audio_source()
-
-            # 逆短時間フーリエ変換で時間領域へと変換
-            if len(processor.tagged_empha_spec_list) > 0:
-                processor.convert_to_audio_from_spectrum()
-
-            # id付けした音声を送信キューへ追加
-            if len(processor.tagged_empha_audio_list) > 0:
-                processor.push_audio_to_queue(sender.send_queue)
-
-        except KeyboardInterrupt:
-            print("Key interrupted")
-            streamer.close()
-            break
-
-
 # コンフィグ
 config = configparser.ConfigParser()
 config.read("config.ini", encoding="utf-8")
-INPUT_DEVICE_INDEX = get_device_index("TAMAGO")
+MIC_ID = int(sys.argv[1])  # マイクid
+INPUT_DEVICE_INDEX = int(sys.argv[2])  # デバイス番号
+PORT = int(sys.argv[3])
 TF_CONFIG = read_hark_tf("tamago_rectf.zip")  # マイクの伝達関数など
 CHANNELS = config["MIC"].getint("CHANNELS")  # チャンネル数
 BIT = config["MIC"].getint("BIT")  # ビット数
@@ -343,6 +260,51 @@ MUSIC_CHUNK = config["MUSIC"].getint("CHUNK")  # music法の処理単位(frame)
 MUSIC_STEP = config["MUSIC"].getint("STEP")  # music法のステップ幅
 ISTFT_CHUNK = config["ISTFT"].getint("CHUNK")  # istftの処理単位(frame)
 SEND_CHUNK = config["SEND"].getint("CHUNK")   # sendの処理単位(sample)
+
+
+def main():
+    # Udp送信側の設定
+    sender = UdpSender(
+        src_ip="127.0.0.1",
+        src_port=PORT,
+        dst_ip="127.0.0.1",
+        dst_port=22222,
+    )
+    # オーディオストリーミングの設定
+    streamer = AudioStreamer()
+    # オーディオプロセッサの設定
+    processor = AudioProcessor()
+
+    while streamer.stream.is_active():
+        try:
+            # ストリーミングから音声取得
+            if not streamer.audio_queue.empty():
+                processor.get_audio_from_queue(streamer.audio_queue)
+
+            # 短時間フーリエ変換で周波数領域へと変換
+            if processor.audio_buff.shape[1] > STFT_CHUNK:
+                processor.convert_to_spectrum_from_audio()
+
+            # MUSIC法とBeamForming法で音源の強調
+            if processor.spec_buff.shape[1] > MUSIC_CHUNK:
+                processor.emphasize_spectrum()
+
+            # 音源別にid付けをする
+            if len(processor.empha_spec_list) > 0:
+                processor.tagging_spectrum()
+
+            # 逆短時間フーリエ変換で時間領域へと変換
+            if len(processor.tagged_empha_spec_list) > 0:
+                processor.convert_to_audio_from_spectrum()
+
+            # id付けした音声を送信キューへ追加
+            if len(processor.tagged_empha_audio_list) > 0:
+                processor.push_audio_to_queue(sender.send_queue)
+
+        except KeyboardInterrupt:
+            print("Key interrupted")
+            streamer.close()
+            break
 
 
 if __name__ == "__main__":
