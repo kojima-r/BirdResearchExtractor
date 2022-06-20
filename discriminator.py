@@ -1,80 +1,221 @@
-import numpy as np
-import socket
-import threading
+import sys
+from udp import UdpReceiver, UdpSender
+import pickle
 import time
-import queue
+import threading
 import numpy as np
+import configparser
+from hark_tf.read_mat import read_hark_tf
 import torch
 import torch.nn.functional as F
 import csv
 from model import Transfer_Cnn14
-import configparser
 
 
-def pred(data, model):
-    # makeing input tensor 
-    input_tensor = torch.from_numpy(data)
-    input_tensor = input_tensor.to(torch.float32)
-    input_tensor = input_tensor.to(device)
-
-    # prediction
-    with torch.no_grad():   
-        pred_y = model(input_tensor)
-        idx = pred_y[0].argmax()
-        label = label_list[idx]
-
-    return label
-
-
-# 環境変数設定
+# コンフィグ
 config = configparser.ConfigParser()
-config.read("discriminator_config.ini", encoding="utf-8")
-dc_config = config["DISCRIMINATOR"]
-CHUNK = dc_config.getint("CHUNK")  # 音声識別の長さ単位
-STEP = dc_config.getint("STEP")  # 音声識別のステップ
-label_list = [] # クラス名リスト
-with open("label01_mapping.tsv", "r") as f:
-    tsv = csv.reader(f, delimiter="\t")
-    for row in tsv:
-        label_list.append(row[1])
+config.read("config.ini", encoding="utf-8")
+TF_CONFIG = read_hark_tf("tamago_rectf.zip")  # マイクの伝達関数など
+MIC_CHANNELS = config["MIC"].getint("CHANNELS")  # チャンネル数
+MIC_BIT = config["MIC"].getint("BIT")  # ビット数
+MIC_SAMPLE_RATE = config["MIC"].getint("SAMPLE_RATE")  # サンプルレート
+STREAM_CHUNK = config["STREAM"].getint("CHUNK")  # ストリーミングからの読み込み単位
+STFT_CHUNK = config["STFT"].getint("CHUNK")  # stftの処理単位(sample)
+STFT_WIN = config["STFT"].getint("WIN")  # stftの窓幅
+STFT_STEP = config["STFT"].getint("STEP")  # stftのステップ幅
+MUSIC_CHUNK = config["MUSIC"].getint("CHUNK")  # music法の処理単位(frame)
+MUSIC_WIN = config["MUSIC"].getint("WIN")  # music法の窓幅
+MUSIC_STEP = config["MUSIC"].getint("STEP")  # music法のステップ幅
+ISTFT_CHUNK = config["ISTFT"].getint("CHUNK")  # istftの処理単位(frame)
+SEND_CHUNK = config["SEND"].getint("CHUNK")   # sendの処理単位(sample)
+DISC_MIN_CHUNK = config["DISCRIMINATOR"].getint("MIN_CHUNK")  # 識別に必要な最小長さ(sample)
+DISC_MAX_CHUNK = config["DISCRIMINATOR"].getint("MAX_CHUNK")  # 識別に必要な最大長さ(sample)
+MODEL_CLASSES_NUM = config["MODEL"].getint("CLASSES_NUM")
+MODEL_WIN = config["MODEL"].getint("WIN")
+MODEL_HOP = config["MODEL"].getint("HOP")
+MODEL_MEL_BINS = config["MODEL"].getint("MEL_BINS")
+MODEL_FMIN = config["MODEL"].getint("FMIN")
+MODEL_FMAX = config["MODEL"].getint("FMAX")
 
-if __name__ == "__main__":
-    # モデルの初期設定、ロード
-    print("Loading a model...")
-    classes_num=291
-    sample_rate=16000
-    window_size=512
-    hop_size=160
-    mel_bins=64
-    fmin=50
-    fmax=8000
-    model_path="best_models/best_model.pth"
-    device = "cuda:0" if torch.cuda.is_available() else "cpu"
-    model = Transfer_Cnn14(sample_rate, window_size, hop_size, mel_bins, fmin, fmax, classes_num, freeze_base=False)
-    model.load_state_dict(torch.load(model_path, map_location=torch.device('cpu')))
-    model.to(device)
-    model.eval()
-    print("Loaded a model!")
 
-    # UDP受信側の初期設定
-    receive_queue = queue.Queue()
-    audio_buff = np.empty(0)
-    receiver = UdpReceiver(receive_queue)
+class Discriminator():
+    def __init__(self, receiver: UdpReceiver, sender: UdpSender):
+        self.receiver = receiver
+        self.sender = sender
+        audio_buff_unit = {
+            "audio": np.empty(0, dtype=np.float),
+            "direction": np.empty(0, dtype=np.int),
+            "audio_id": np.empty(0, dtype=np.int)
+        }
+        self.audio_buff = [audio_buff_unit.copy(), audio_buff_unit.copy()]
+        self.now_audio = [audio_buff_unit.copy(), audio_buff_unit.copy()]
+        tagged_audio_buff_unit = {
+            "direction": np.empty(0, dtype=np.int),
+            "audio_id": np.empty(0, dtype=np.int),
+            "label": np.empty(0, dtype=np.int)
+        }
+        self.tagged_audio_buff = [tagged_audio_buff_unit.copy(), tagged_audio_buff_unit.copy()]
+
+        # モデルのロード
+        print("Loading a model...")
+        self.classes_num = MODEL_CLASSES_NUM
+        self.sample_rate = MIC_SAMPLE_RATE
+        self.window_size = MODEL_WIN
+        self.hop_size = MODEL_HOP
+        self.mel_bins = MODEL_MEL_BINS
+        self.fmin = MODEL_FMIN
+        self.fmax = MODEL_FMAX
+        self.model_path = "best_models/best_model.pth"
+        
+        self.label_list = []
+        with open("label01_mapping.tsv", "r") as f:
+            tsv = csv.reader(f, delimiter="\t")
+            for row in tsv:
+                self.label_list.append(row[1])
+        
+        self.device = "cuda:0" if torch.cuda.is_available() else "cpu"
+        self.model = Transfer_Cnn14(self.sample_rate, self.window_size, self.hop_size, self.mel_bins, self.fmin, self.fmax, self.classes_num, freeze_base=False)
+        self.model.load_state_dict(torch.load(self.model_path, map_location=torch.device('cpu')))
+        self.model.to(self.device)
+        self.model.eval()
+        print("Loaded a model!")
+
+    def start(self):
+        print("Starting discriminator......")
+        discriminating_thread = threading.Thread(target=self.__process)
+        discriminating_thread.setDaemon(True)
+        discriminating_thread.start()
+        print("Started discriminator!")
+
+    def __process(self):
+        while True:
+            if not self.receiver.receive_queue.empty():
+                self.__get_audio_from_queue(
+                    chunk=SEND_CHUNK
+                )
+            for mic_id in range(2):
+                if self.audio_buff[mic_id]["audio"].shape[0] > 0:
+                    self.__discriminate(
+                        mic_id=mic_id,
+                        min_chunk=DISC_MIN_CHUNK,
+                        max_chunk=DISC_MAX_CHUNK
+                    )
+                if self.tagged_audio_buff[mic_id]["audio_id"].shape[0] >= SEND_CHUNK:
+                    self.__put_to_send_queue(
+                        mic_id=mic_id,
+                        chunk=SEND_CHUNK
+                    )
+
+    def __get_audio_from_queue(self, chunk):
+        data_bin = self.receiver.receive_queue.get()
+        data = np.frombuffer(data_bin, dtype="float64")
+        audio = data[:chunk]
+        direction = data[chunk:chunk*2].astype(np.int)
+        audio_id = data[chunk*2:chunk*3].astype(np.int)
+        mic_id = data[-1].astype(np.int)
+        self.audio_buff[mic_id]["audio"] = np.concatenate([self.audio_buff[mic_id]["audio"], audio], axis=0)
+        self.audio_buff[mic_id]["direction"] = np.concatenate([self.audio_buff[mic_id]["direction"], direction], axis=0)
+        self.audio_buff[mic_id]["audio_id"] = np.concatenate([self.audio_buff[mic_id]["audio_id"], audio_id], axis=0)
+    
+    def __discriminate(self, mic_id, min_chunk, max_chunk):
+        # 今の（最初に処理するべき）audio_idのオーディオを取り出す
+        now_audio_id = self.audio_buff[mic_id]["audio_id"][0]
+        audio = self.audio_buff[mic_id]["audio"][self.audio_buff[mic_id]["audio_id"] == now_audio_id]
+        direction = self.audio_buff[mic_id]["direction"][self.audio_buff[mic_id]["audio_id"] == now_audio_id]
+        audio_id = self.audio_buff[mic_id]["audio_id"][self.audio_buff[mic_id]["audio_id"] == now_audio_id]
+        self.audio_buff[mic_id]["audio"] = self.audio_buff[mic_id]["audio"][self.audio_buff[mic_id]["audio_id"] != now_audio_id]
+        self.audio_buff[mic_id]["direction"] = self.audio_buff[mic_id]["direction"][self.audio_buff[mic_id]["audio_id"] != now_audio_id]
+        self.audio_buff[mic_id]["audio_id"] = self.audio_buff[mic_id]["audio_id"][self.audio_buff[mic_id]["audio_id"] != now_audio_id]
+
+        # audio_idが同じか空ならnow_audioに追加
+        if self.now_audio[mic_id]["audio"].shape[0] == 0:
+            self.now_audio[mic_id]["audio"] = np.concatenate([self.now_audio[mic_id]["audio"], audio], axis=0)
+            self.now_audio[mic_id]["direction"] = np.concatenate([self.now_audio[mic_id]["direction"], direction], axis=0)
+            self.now_audio[mic_id]["audio_id"] = np.concatenate([self.now_audio[mic_id]["audio_id"], audio_id], axis=0)
+        elif now_audio_id == self.now_audio[mic_id]["audio_id"][-1]:
+            self.now_audio[mic_id]["audio"] = np.concatenate([self.now_audio[mic_id]["audio"], audio], axis=0)
+            self.now_audio[mic_id]["direction"] = np.concatenate([self.now_audio[mic_id]["direction"], direction], axis=0)
+            self.now_audio[mic_id]["audio_id"] = np.concatenate([self.now_audio[mic_id]["audio_id"], audio_id], axis=0)
+        else:
+            self.now_audio[mic_id]["audio"] = audio
+            self.now_audio[mic_id]["direction"] = direction
+            self.now_audio[mic_id]["audio_id"] = audio_id
+
+        # モデルに渡すオーディオの作成・予測
+        if self.now_audio[mic_id]["audio"].shape[0] >= min_chunk:
+            if self.now_audio[mic_id]["audio"].shape[0] >= max_chunk:
+                audio_for_pred = self.now_audio[mic_id]["audio"][-max_chunk:]
+            else:
+                audio_for_pred = self.now_audio[mic_id]["audio"]
+            label = self.__pred(audio_for_pred[None, :])
+        
+            # 予測結果をバッファに追加
+            now_len = self.now_audio[mic_id]["audio"].shape[0]
+            prev_len = now_len - audio.shape[0]
+            if prev_len < min_chunk:
+                # 前の長さがmin_chunk以下だと前回までの値を予測に使っていない
+                self.tagged_audio_buff[mic_id]["direction"] = np.concatenate([self.tagged_audio_buff[mic_id]["direction"], self.now_audio[mic_id]["direction"]], axis=0)
+                self.tagged_audio_buff[mic_id]["audio_id"] = np.concatenate([self.tagged_audio_buff[mic_id]["audio_id"], self.now_audio[mic_id]["audio_id"]], axis=0)
+                self.tagged_audio_buff[mic_id]["label"] = np.concatenate([self.tagged_audio_buff[mic_id]["label"], np.repeat(label, now_len)], axis=0)
+            else:
+                # 増分だけ追加
+                self.tagged_audio_buff[mic_id]["direction"] = np.concatenate([self.tagged_audio_buff[mic_id]["direction"], direction], axis=0)
+                self.tagged_audio_buff[mic_id]["audio_id"] = np.concatenate([self.tagged_audio_buff[mic_id]["audio_id"], audio_id], axis=0)
+                self.tagged_audio_buff[mic_id]["label"] = np.concatenate([self.tagged_audio_buff[mic_id]["label"], np.repeat(label, audio.shape[0])], axis=0)
+        
+    def __pred(self, audio):
+        input_tensor = torch.from_numpy(audio)
+        input_tensor = input_tensor.to(torch.float32)
+        input_tensor = input_tensor.to(self.device)
+        with torch.no_grad():
+            pred_y = self.model(input_tensor)
+            idx = pred_y[0].argmax().item()
+        return idx
+
+    def __put_to_send_queue(self, mic_id, chunk):
+        direction = self.tagged_audio_buff[mic_id]["direction"][:chunk]
+        self.tagged_audio_buff[mic_id]["direction"] = self.tagged_audio_buff[mic_id]["direction"][chunk:]
+        audio_id = self.tagged_audio_buff[mic_id]["audio_id"][:chunk]
+        self.tagged_audio_buff[mic_id]["audio_id"] = self.tagged_audio_buff[mic_id]["audio_id"][chunk:]
+        label = self.tagged_audio_buff[mic_id]["label"][:chunk]
+        self.tagged_audio_buff[mic_id]["label"] = self.tagged_audio_buff[mic_id]["label"][chunk:]
+        data = np.concatenate([direction, audio_id, label, np.array([mic_id])], axis=0)
+        data_bin = data.tobytes()
+        self.sender.send_queue.put(data_bin)
+
+def main():
+    # Udp受信側の設定
+    receiver_from_extractor = UdpReceiver(
+        src_ip="127.0.0.1",
+        src_port=20000
+    )
+    # Udp送信側の設定
+    sender_to_display = UdpSender(
+        src_ip="127.0.0.1",
+        src_port=21000,
+        dst_ip="127.0.0.1",
+        dst_port=30000
+    )
+    # 識別器の設定
+    discriminator = Discriminator(
+        receiver=receiver_from_extractor,
+        sender=sender_to_display
+    )
+    # 識別器の開始
+    discriminator.start()
 
     while True:
         try:
-            # UDP通信を経由してオーディオデータを取得
-            while not receive_queue.empty():
-                audio = receive_queue.get()
-                audio_buff = np.concatenate([audio_buff, audio])
-            
-            # 識別器を用いてラベル予測
-            if audio_buff.shape[0] > CHUNK:
-                audio = audio_buff[:CHUNK]
-                audio_buff = audio_buff[STEP:]
-                label = pred(audio[None, :], model)
-                print(label)
-
+            a = discriminator.audio_buff[0]["audio"].shape
+            b = discriminator.audio_buff[1]["audio"].shape
+            print(f"audio_buff: {a} {b}")
+            time.sleep(1)
         except KeyboardInterrupt:
             print("Key interrupted")
+            receiver_from_extractor.close()
+            sender_to_display.close()
             break
+
+
+if __name__ == "__main__":
+    main()
