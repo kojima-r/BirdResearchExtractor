@@ -148,7 +148,7 @@ class AudioProcessor():
         self.next_audio_id = 0
 
     def start(self):
-        print("Starting processor......")
+        print("Stopping processor......")
         processing_thread = threading.Thread(target=self.__process)
         processing_thread.setDaemon(True)
         processing_thread.start()
