@@ -89,7 +89,7 @@ class Discriminator():
 
     def __process(self):
         while True:
-            if not self.receiver.receive_queue.empty():
+            while not self.receiver.receive_queue.empty():
                 self.__get_audio_from_queue(
                     chunk=SEND_CHUNK
                 )
@@ -209,6 +209,13 @@ def main():
             a = discriminator.audio_buff[0]["audio"].shape
             b = discriminator.audio_buff[1]["audio"].shape
             print(f"audio_buff: {a} {b}")
+            c = discriminator.tagged_audio_buff[0]["audio_id"].shape
+            d = discriminator.tagged_audio_buff[1]["audio_id"].shape
+            print(f"tagged_audio_buff: {c} {d}")
+            e = receiver_from_extractor.receive_queue.qsize()
+            print(f"receive_queue: {e}")
+            f = sender_to_display.send_queue.qsize()
+            print(f"send_queue: {f}")
             time.sleep(1)
         except KeyboardInterrupt:
             print("Key interrupted")

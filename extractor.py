@@ -16,6 +16,9 @@ import threading
 from udp import UdpSender
 
 
+DEBUG = 1
+
+
 # コンフィグ
 MIC_ID = int(sys.argv[1])  # マイクid
 PORT_DISC = 10000 + 100 * MIC_ID
@@ -323,7 +326,9 @@ def main():
 
     while True:
         try:
-            print(f"audio_buff: {processor.streamer.audio_buff.shape}")
+            if DEBUG:
+                print(f"audio_buff: {streamer.audio_buff.shape}")
+                print(f"send_queue: {sender_to_discriminator.send_queue.qsize()}")
             time.sleep(1)
         except KeyboardInterrupt:
             print("Key interrupted")
