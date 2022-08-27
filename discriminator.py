@@ -11,6 +11,7 @@ import torch.nn.functional as F
 import csv
 from model import Transfer_Cnn14
 
+DEBUG = 1
 
 # コンフィグ
 config = configparser.ConfigParser()
@@ -52,7 +53,8 @@ class Discriminator():
         tagged_audio_buff_unit = {
             "direction": np.empty(0, dtype=np.int),
             "audio_id": np.empty(0, dtype=np.int),
-            "label": np.empty(0, dtype=np.int)
+            "pred_idx": np.empty(0, dtype=np.int),
+            "pred_prob": np.empty(0, dtype=np.float)
         }
         self.tagged_audio_buff = [tagged_audio_buff_unit.copy(), tagged_audio_buff_unit.copy()]
 
@@ -147,39 +149,47 @@ class Discriminator():
                 audio_for_pred = self.now_audio[mic_id]["audio"][-max_chunk:]
             else:
                 audio_for_pred = self.now_audio[mic_id]["audio"]
-            label = self.__pred(audio_for_pred[None, :])
+            idx, prob = self.__pred(audio_for_pred[None, :])
         
             # 予測結果をバッファに追加
             now_len = self.now_audio[mic_id]["audio"].shape[0]
             prev_len = now_len - audio.shape[0]
             if prev_len < min_chunk:
-                # 前の長さがmin_chunk以下だと前回までの値を予測に使っていない
+                # 前の長さがmin_chunk以下だと前回までの値を予測に使っていないので全て認識に使って結果を追加
                 self.tagged_audio_buff[mic_id]["direction"] = np.concatenate([self.tagged_audio_buff[mic_id]["direction"], self.now_audio[mic_id]["direction"]], axis=0)
                 self.tagged_audio_buff[mic_id]["audio_id"] = np.concatenate([self.tagged_audio_buff[mic_id]["audio_id"], self.now_audio[mic_id]["audio_id"]], axis=0)
-                self.tagged_audio_buff[mic_id]["label"] = np.concatenate([self.tagged_audio_buff[mic_id]["label"], np.repeat(label, now_len)], axis=0)
+                self.tagged_audio_buff[mic_id]["pred_idx"] = np.concatenate([self.tagged_audio_buff[mic_id]["pred_idx"], np.repeat(idx, now_len)], axis=0)
+                self.tagged_audio_buff[mic_id]["pred_prob"] = np.concatenate([self.tagged_audio_buff[mic_id]["pred_prob"], np.repeat(prob, now_len)], axis=0)
             else:
                 # 増分だけ追加
                 self.tagged_audio_buff[mic_id]["direction"] = np.concatenate([self.tagged_audio_buff[mic_id]["direction"], direction], axis=0)
                 self.tagged_audio_buff[mic_id]["audio_id"] = np.concatenate([self.tagged_audio_buff[mic_id]["audio_id"], audio_id], axis=0)
-                self.tagged_audio_buff[mic_id]["label"] = np.concatenate([self.tagged_audio_buff[mic_id]["label"], np.repeat(label, audio.shape[0])], axis=0)
-        
+                self.tagged_audio_buff[mic_id]["label"] = np.concatenate([self.tagged_audio_buff[mic_id]["pred_idx"], np.repeat(idx, audio.shape[0])], axis=0)
+                self.tagged_audio_buff[mic_id]["pred_prob"] = np.concatenate([self.tagged_audio_buff[mic_id]["pred_prob"], np.repeat(prob, audio.shape[0])], axis=0)
+
     def __pred(self, audio):
         input_tensor = torch.from_numpy(audio)
         input_tensor = input_tensor.to(torch.float32)
         input_tensor = input_tensor.to(self.device)
         with torch.no_grad():
             pred_y = self.model(input_tensor)
+            softmax = torch.nn.Softmax(dim=0)
             idx = pred_y[0].argmax().item()
-        return idx
+            prob = softmax(pred_y[0]).max().item()
+            if DEBUG:
+                print(idx, prob)
+        return idx, prob
 
     def __put_to_send_queue(self, mic_id, chunk):
         direction = self.tagged_audio_buff[mic_id]["direction"][:chunk]
         self.tagged_audio_buff[mic_id]["direction"] = self.tagged_audio_buff[mic_id]["direction"][chunk:]
         audio_id = self.tagged_audio_buff[mic_id]["audio_id"][:chunk]
         self.tagged_audio_buff[mic_id]["audio_id"] = self.tagged_audio_buff[mic_id]["audio_id"][chunk:]
-        label = self.tagged_audio_buff[mic_id]["label"][:chunk]
-        self.tagged_audio_buff[mic_id]["label"] = self.tagged_audio_buff[mic_id]["label"][chunk:]
-        data = np.concatenate([direction, audio_id, label, np.array([mic_id])], axis=0)
+        pred_idx = self.tagged_audio_buff[mic_id]["pred_idx"][:chunk]
+        self.tagged_audio_buff[mic_id]["pred_idx"] = self.tagged_audio_buff[mic_id]["pred_idx"][chunk:]
+        pred_prob = self.tagged_audio_buff[mic_id]["pred_prob"][:chunk]
+        self.tagged_audio_buff[mic_id]["pred_idx"] = self.tagged_audio_buff[mic_id]["pred_prob"][chunk:]
+        data = np.concatenate([direction, audio_id, pred_idx, pred_prob, np.array([mic_id])], axis=0).astype(np.float)
         data_bin = data.tobytes()
         self.sender.send_queue.put(data_bin)
 
@@ -206,16 +216,17 @@ def main():
 
     while True:
         try:
-            a = discriminator.audio_buff[0]["audio"].shape
-            b = discriminator.audio_buff[1]["audio"].shape
-            print(f"audio_buff: {a} {b}")
-            c = discriminator.tagged_audio_buff[0]["audio_id"].shape
-            d = discriminator.tagged_audio_buff[1]["audio_id"].shape
-            print(f"tagged_audio_buff: {c} {d}")
-            e = receiver_from_extractor.receive_queue.qsize()
-            print(f"receive_queue: {e}")
-            f = sender_to_display.send_queue.qsize()
-            print(f"send_queue: {f}")
+            if DEBUG:
+                a = discriminator.audio_buff[0]["audio"].shape
+                b = discriminator.audio_buff[1]["audio"].shape
+                print(f"audio_buff: {a} {b}")
+                c = discriminator.tagged_audio_buff[0]["audio_id"].shape
+                d = discriminator.tagged_audio_buff[1]["audio_id"].shape
+                print(f"tagged_audio_buff: {c} {d}")
+                e = receiver_from_extractor.receive_queue.qsize()
+                print(f"receive_queue: {e}")
+                f = sender_to_display.send_queue.qsize()
+                print(f"send_queue: {f}")
             time.sleep(1)
         except KeyboardInterrupt:
             print("Key interrupted")
