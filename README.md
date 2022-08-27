@@ -11,7 +11,6 @@ https://github.com/kojima-r/BirdResearchDBPreprocessor
 
 https://drive.google.com/drive/folders/18_2jTJM086wZ8m_5jNTDnqV4w7LJT5VX?usp=sharing
 
-リポジトリ内に以下のファイル
 ```
 BirdResearchExtractor/
   - best_models/
