@@ -59,12 +59,12 @@ def beamforming_ds(tf_config, spec, n_theta=18):
     return result
 
 
-def beamforming_ds2(tf_config, spec, theta):
+def beamforming_ds2(tf_config, spec, index):
     nch = spec.shape[0]
     nframe = spec.shape[1]
     nfreq_bin = spec.shape[2]
 
-    index = micarrayx.nearest_direction_index(tf_config, theta)
+    #index = micarrayx.nearest_direction_index(tf_config, theta)
     a_vec = get_beam_vec(tf_config, index)
     ds_vec = a_vec.conj()[:, :]/np.absolute(a_vec[:, :])
     ds_freq = np.zeros((nframe, nfreq_bin), dtype=complex)

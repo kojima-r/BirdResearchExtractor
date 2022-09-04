@@ -14,7 +14,7 @@ import math
 import time
 import threading
 from udp import UdpSender
-
+import wave
 
 DEBUG = 1
 
@@ -24,7 +24,7 @@ MIC_ID = int(sys.argv[1])  # マイクid
 PORT_DISC = 10000 + 100 * MIC_ID
 PORT_DISP = 11000 + 100 * MIC_ID
 if MIC_ID == 0:
-    MIC_DEVICE_INDEX = 24
+    MIC_DEVICE_INDEX = 8
 elif MIC_ID == 1:
     MIC_DEVICE_INDEX = 25
 config = configparser.ConfigParser()
@@ -52,6 +52,80 @@ class ArrayMic():
         self.bit = bit
         self.sample_rate = sample_rate
         self.tf_config = tf_config
+
+class WavStreamer():
+    def __init__(self, mic: ArrayMic):
+        self.mic = mic
+        self.audio_buff = np.empty((self.mic.channels, 0))
+
+    def __convert_to_np_from_buff(self, in_data: bytes) -> np.ndarray:
+        """ バッファ形式の音声データをnumpy形式に変換
+
+        Args:
+            in_data (bytes): バッファデータ
+
+        Returns:
+            out_data (ndarray): (チャンネル数, データ長)
+        """
+        bit_dtype = {
+            8: "int8",
+            16: "int16",
+            24: "int24",
+            32: "int32"
+        }
+        out_data = np.frombuffer(in_data, dtype=bit_dtype[self.mic.bit])
+        out_data = out_data / (2 ** (self.mic.bit - 1))
+        out_data = out_data.reshape(-1, self.mic.channels).T
+        return out_data
+
+    #def __callback(self, in_data: bytes, frame_count, time_info, status) -> tuple:
+    def __process(self):
+        """ オーディオ取得時のコールバック関数
+        Args:
+            in_data (bytes): オーディオのバッファデータ
+            frame_count (int): フレーム数
+        Returns:
+            out_data ((bytes, int)): タプル
+        """
+        in_data = self.wf.readframes(self.chunk)
+        while len(in_data)!=0:
+            audio = self.__convert_to_np_from_buff(in_data)
+            self.audio_buff = np.concatenate([self.audio_buff, audio], axis=1)
+            in_data = self.wf.readframes(self.chunk)
+            time.sleep(self.chunk/16000.0)
+        print("end of file!!")
+        return
+
+    def open(self, chunk) -> None:
+        """ オーディオストリーミングを開始
+
+        Args:
+            chunk (bytes):
+
+        Returns:
+            out_data ((bytes, int)): タプル
+        """
+        self.chunk=chunk
+        print("Opening audio streaming......")
+        p_format = {
+            8: pyaudio.paInt8,
+            16: pyaudio.paInt16,
+            24: pyaudio.paInt24,
+            32: pyaudio.paInt32
+        }
+        print("Opened audio streaming!")
+        filename="test.wav"
+        self.wf = wave.open(filename, 'rb')
+        processing_thread = threading.Thread(target=self.__process)
+        processing_thread.daemon = True
+        processing_thread.start()
+
+    def close(self) -> None:
+        """オーディオストリーミングを終了
+        """
+        print("Closing audio streaming......")
+        print("Closed audio streaming!")
+
 
 
 class AudioStreamer():
@@ -153,7 +227,7 @@ class AudioProcessor():
     def start(self):
         print("Stopping processor......")
         processing_thread = threading.Thread(target=self.__process)
-        processing_thread.setDaemon(True)
+        processing_thread.daemon = True
         processing_thread.start()
         print("Started processor!")
 
@@ -236,6 +310,7 @@ class AudioProcessor():
         # p.shape = (1, 72)
         m_power = 10 * np.log10(p + 1.0)
         direction = m_power.argmax(axis=1)[0]
+
         return direction
 
     def __bf(self, spec, direction):
@@ -246,8 +321,13 @@ class AudioProcessor():
         Returns:
             ndarray: 強調音源のスペクトログラム(データ長, 周波数ビン)
         """
-        theta = direction * 360 / 72
-        bf = beamforming_ds2(self.streamer.mic.tf_config, spec, theta=theta)
+
+        tf_config=self.streamer.mic.tf_config
+        if direction in tf_config["tf"]:
+            pos=tf_config["tf"][direction]["position"]
+            print(">>",pos)
+            #theta = direction * 360 / 72
+        bf = beamforming_ds2(self.streamer.mic.tf_config, spec, index=direction)
         return bf
 
     def __convert_to_audio_from_spectrum(self, chunk, stft_win, stft_step):
@@ -314,7 +394,8 @@ def main():
         tf_config=TF_CONFIG
     )
     # オーディオストリーミングの設定
-    streamer = AudioStreamer(mic=mic)
+    #streamer = AudioStreamer(mic=mic)
+    streamer = WavStreamer(mic=mic)
     processor = AudioProcessor(
         streamer=streamer,
         sender=sender_to_discriminator
