@@ -1,6 +1,10 @@
 # BirdResearchExtractor
 Array Mic を用いて音源を定位・分離・識別する
 
+- extractor.py : 定位・分離モジュール
+- discriminator.py：識別モジュール
+- display.py：表示モジュール
+
 ## 準備
 
 ### Base model (BirdResearchDBPreprocessor)
