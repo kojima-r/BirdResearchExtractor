@@ -40,7 +40,7 @@ git clone <this repository>
 cd BirdResearchExtractor
 ```
 
-環境構築
+学習・識別環境構築
 ```bash
 git clone https://github.com/kojima-r/BirdResearchDBPreprocessor
 
@@ -61,7 +61,10 @@ cp BirdResearchDBPreprocessor/model.py ./
 git clone https://github.com/qiuqiangkong/audioset_tagging_cnn
 cp -r audioset_tagging_cnn/metadata ./
 
- 
+```
+
+環境構築
+``` 
 conda create -n hbb python=3.9
 conda activate hbb
 
